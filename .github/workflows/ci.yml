@@ -175,8 +175,7 @@ jobs:
       build_name: ${{ steps.set-build-info.outputs.build_name }}
       build_started_timestamp: ${{ steps.publish-build-info.outputs.build_started_timestamp }}
       build_number: ${{ steps.set-build-info.outputs.build_number }}
-      app_version: ${{ steps.set-app-version.outputs.app_version }}
-      jf_oidc_token: ${{ steps.extract-token.outputs.oidc_token }}
+      app_version: ${{ steps.determine-semver.outputs.app_version }}
 
     steps:
       # 📥 Setup: Repository checkout for frontend system source code
@@ -219,6 +218,7 @@ jobs:
         uses: jfrog/setup-jfrog-cli@v4
         id: jfrog-cli-auth
         with:
+          version: 2.88.0
           oidc-provider-name: bookverse-web-github
           oidc-audience: ${{ vars.JFROG_URL }}
         env:
@@ -254,7 +254,7 @@ jobs:
           echo "✅ Python dependencies installed"
 
       - name: "[Setup] Determine SemVer"
-        id: set-app-version
+        id: determine-semver
         run: |
           set -euo pipefail
           SERVICE_NAME=${SERVICE_NAME:-$(echo ${{ github.event.repository.name }} | sed 's/bookverse-//')}
@@ -406,76 +406,11 @@ jobs:
           echo "✅ Web assets package evidence attached via shared library: config-bundle"
 
       - name: "[Build] Docker Registry Authentication"
-        env:
-          OIDC_TOKEN: ${{ steps.jfrog-cli-auth.outputs.oidc-token }}
-          REGISTRY_URL: ${{ vars.JFROG_URL }}
-        run: |
-          set -euo pipefail
-          
-          echo "🔐 Authenticating Docker with JFrog registry..."
-          
-          if [[ -z "$OIDC_TOKEN" ]]; then
-            echo "❌ OIDC token not provided" >&2
-            echo "🔍 Available step outputs:" >&2
-            echo "  jfrog-cli-auth.outputs: ${{ toJSON(steps.jfrog-cli-auth.outputs) }}" >&2
-            exit 1
-          fi
-          
-          if [[ -z "$REGISTRY_URL" ]]; then
-            echo "❌ Registry URL not provided" >&2
-            exit 1
-          fi
-          
-          DOCKER_REGISTRY="${REGISTRY_URL}"
-          DOCKER_REGISTRY="${DOCKER_REGISTRY#https://}"
-          DOCKER_REGISTRY="${DOCKER_REGISTRY#https://}"
-          DOCKER_REGISTRY="${DOCKER_REGISTRY%/}"
-          
-          echo "🐳 Registry hostname: $DOCKER_REGISTRY"
-          
-          echo "🔍 Parsing JWT token for username..."
-          TOKEN_PAYLOAD=$(echo "$OIDC_TOKEN" | cut -d. -f2)
-          
-          case $((${#TOKEN_PAYLOAD} % 4)) in
-            2) TOKEN_PAYLOAD="${TOKEN_PAYLOAD}==" ;;
-            3) TOKEN_PAYLOAD="${TOKEN_PAYLOAD}=" ;;
-          esac
-          
-          CLAIMS=$(echo "$TOKEN_PAYLOAD" | tr '_-' '/+' | base64 -d 2>/dev/null || true)
-          if [[ -z "$CLAIMS" ]]; then
-            echo "❌ Failed to decode JWT token payload" >&2
-            exit 1
-          fi
-          
-          DOCKER_USER=$(echo "$CLAIMS" | jq -r '.username // .sub // .subject // "oauth2_access_token"' 2>/dev/null || echo "oauth2_access_token")
-          
-          if [[ "$DOCKER_USER" == *"/users/"* ]]; then
-            DOCKER_USER=${DOCKER_USER##*/users/}
-            echo "🔍 Extracted username from JFrog path format"
-          fi
-          
-          if [[ -z "$DOCKER_USER" || "$DOCKER_USER" == "null" ]]; then
-            DOCKER_USER="oauth2_access_token"
-            echo "🔍 Using fallback username: oauth2_access_token"
-          fi
-          
-          echo "📋 Authentication details:"
-          echo "  • Registry: $DOCKER_REGISTRY"
-          echo "  • Username: $DOCKER_USER"
-          echo "  • Token: ${OIDC_TOKEN:0:10}*** (truncated for security)"
-          
-          echo "🐳 Performing Docker registry login..."
-          if echo "$OIDC_TOKEN" | docker login "$DOCKER_REGISTRY" -u "$DOCKER_USER" --password-stdin; then
-            echo "✅ Docker authentication successful"
-          else
-            echo "❌ Docker authentication failed" >&2
-            echo "🔍 Debugging information:"
-            echo "  • Registry: $DOCKER_REGISTRY"
-            echo "  • Username: $DOCKER_USER"
-            echo "  • Token length: ${#OIDC_TOKEN}"
-            echo "  • Token prefix: ${OIDC_TOKEN:0:20}..."
-            exit 1
-          fi
+        uses: docker/login-action@v3.6.0
+        with:
+          registry: ${{ vars.JFROG_URL }}
+          username: ${{ steps.jfrog-cli-auth.outputs.oidc-user }}
+          password: ${{ steps.jfrog-cli-auth.outputs.oidc-token }}
 
       - name: "[Build] Web image"
         run: |
@@ -622,6 +557,7 @@ jobs:
         uses: jfrog/setup-jfrog-cli@v4
         id: jfrog-cli-auth
         with:
+          version: 2.88.0
           oidc-provider-name: bookverse-web-github
           oidc-audience: ${{ vars.JFROG_URL }}
         env:
